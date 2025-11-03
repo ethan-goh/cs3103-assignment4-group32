@@ -2,7 +2,7 @@ import argparse
 import json
 import time
 
-from hudp.api import GameNetAPI as GameNet
+from hudp.api import GameNet
 
 
 def run_server(listen_host: str, listen_port: int) -> None:
