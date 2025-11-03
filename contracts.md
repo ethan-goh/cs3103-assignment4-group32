@@ -15,24 +15,24 @@ A 16-bit checksum is included for integrity verification across header + payload
 
 ### Required Functions (Exposed API)
 
-#### `encode_data(ver_flags: int, chan_type: int, conn_id: int, seq_no: int, ts_send: int, payload: bytes) -> bytes`
+#### `encode_data(ts_send: int, seq_no: int, chan_type: int, payload: bytes) -> bytes`
 
-Build a DATA frame (reliable if REL flag set).
-Computes and embeds a 16-bit checksum over the header and payload.
+Build a DATA frame (reliable if chan_type = 1).
+Computes and embeds checksum.
 
-#### `encode_ack(conn_id: int, ack_no: int, ts_send: int) -> bytes`
+#### `encode_ack(seq_no: int, ts_send: int, chan_type: int = 0) -> bytes`
 
-Build an ACK-only frame (no payload; ACK flag set; seq_no = ack_no).
+Build an ACK-only frame (no payload).
 Checksum computed the same way as for DATA frames.
 
 #### `decode_frame(datagram: bytes) -> tuple[str, dict, bytes]`
 
-Parse bytes → `("DATA"|"ACK", header_dict, payload)`; for ACK, payload is `b""`.
-If the checksum fails, include "valid": False in header_dict.
+Parse bytes → ("DATA" | "ACK", header_dict, payload).
+Verifies checksum. Returns header_dict with "valid": True/False.
 
 #### `now_ms() -> int`
 
-Millisecond clock for timestamps.
+Return current timestamp in milliseconds.
 
 ---
 
