@@ -47,6 +47,7 @@ def encode_ack(seq_no: int, ts_send: int, chan_type: int = 0) -> bytes:
     Build an ACK-only frame (no payload).
     chan_type = 0 by default.
     """
+    ts_send &= 0xFFFFFFFF  # Wrap timestamp modulo 2^32 to keep it within 4 bytes
     header_wo_cksum = struct.pack(HEADER_FORMAT, ts_send, seq_no, chan_type, 0)
     checksum = _crc16(header_wo_cksum)
     header = struct.pack(HEADER_FORMAT, ts_send, seq_no, chan_type, checksum)
