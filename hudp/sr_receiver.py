@@ -1,7 +1,7 @@
 from collections import deque
 
 class SRReceiver:
-    def __init__(self, window_size=128, skip_threshold_ms=1000):
+    def __init__(self, window_size=128, skip_threshold_ms=200):
         self.expected_seq = 0
         self.buffer = {}            # seq -> (ts_send, payload)
         self.ack_outbox = deque()   # seq numbers to ACK
