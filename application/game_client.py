@@ -3,7 +3,7 @@ import json
 import random
 import time
 
-from hudp.api import GameNetAPI as GameNet
+from hudp.api import GameNet
 
 
 def run_client(server_host: str,
