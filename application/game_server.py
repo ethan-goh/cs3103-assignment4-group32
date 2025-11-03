@@ -30,11 +30,11 @@ def run_server(listen_host: str, listen_port: int) -> None:
             except Exception:
                 payload = {"raw": payload_bytes.hex()}
 
-            seq_no = meta.get("seq", meta.get("seq_no"))
-            chan_type = meta.get("chan_type", meta.get("channel_id"))
-            ts_send = meta.get("ts_send_ms", meta.get("timestamp"))
+            seq_no = meta.get("seq_no")
+            chan_type = meta.get("chan_type")
+            ts_send = meta.get("ts_send_ms")
             rtt_ms = meta.get("rtt_ms")
-            num_retx = meta.get("retransmissions", meta.get("num_retx"))
+            num_retx = meta.get("retransmissions")
             from_addr = meta.get("from_addr")
 
             print(

@@ -266,19 +266,14 @@ class UDPIO:
                         for del_seq, del_payload in deliverable:
                             metadata = {
                                 'reliable': True,
-                                'seq': del_seq,
-                                'seq_no': del_seq,  # Alternative key for compatibility
+                                'seq_no': del_seq,
                                 'chan_type': chan_type,
-                                'channel_id': chan_type,  # Alternative key
-                                'ts_send': ts_send,
-                                'ts_send_ms': ts_send,  # Alternative key
-                                'timestamp': ts_send,  # Alternative key
+                                'ts_send_ms': ts_send,
                                 'recv_time': now,
                                 'from_addr': addr,
                                 'valid': header.get('valid', True),
                                 'rtt_ms': None,  # Will be populated by sender if available
                                 'retransmissions': None,  # Will be populated by sender if available
-                                'num_retx': None,  # Alternative key
                             }
                             self.delivered_queue.put((del_payload, metadata))
                             
@@ -286,13 +281,9 @@ class UDPIO:
                         # Deliver directly to app queue (no SR logic)
                         metadata = {
                             'reliable': False,
-                            'seq': header.get('seq_no', 0),
                             'seq_no': header.get('seq_no', 0),
                             'chan_type': chan_type,
-                            'channel_id': chan_type,
-                            'ts_send': header.get('ts_send', 0),
                             'ts_send_ms': header.get('ts_send', 0),
-                            'timestamp': header.get('ts_send', 0),
                             'recv_time': now,
                             'from_addr': addr,
                             'valid': header.get('valid', True),

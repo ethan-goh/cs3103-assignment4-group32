@@ -1,8 +1,8 @@
 # metrics.py
 import math
 
-CHAN_RELIABLE = 0
-CHAN_UNRELIABLE = 1
+CHAN_RELIABLE = 1      # chan_type=1 for reliable
+CHAN_UNRELIABLE = 0    # chan_type=0 for unreliable
 
 class ChannelStats:
     def __init__(self):
