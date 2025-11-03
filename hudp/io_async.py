@@ -29,7 +29,7 @@ class UDPIO:
     the Selective Repeat sender and receiver.
     """
     
-    def __init__(self, local_addr: Tuple[str, int], remote_addr: Tuple[str, int], 
+    def __init__(self, local_addr: Tuple[str, int], remote_addr: Optional[Tuple[str, int]] = None, 
                  send_interval_ms: int = 10):
         """
         Initialize the UDP I/O adapter.
@@ -37,6 +37,7 @@ class UDPIO:
         Args:
             local_addr: (host, port) tuple for binding the local socket
             remote_addr: (host, port) tuple for the remote endpoint
+                        Can be None for server mode (will be set on first recv)
             send_interval_ms: How often the send loop runs (milliseconds)
         """
         self.local_addr = local_addr
@@ -118,6 +119,10 @@ class UDPIO:
         Args:
             data: The payload to send
         """
+        if self.remote_addr is None:
+            # Can't send if we don't know the remote address yet
+            return
+            
         # Build an unreliable DATA frame
         # chan_type=0 for unreliable, seq_no=0 (ignored for unreliable)
         now = packet.now_ms()
@@ -167,6 +172,11 @@ class UDPIO:
         """
         while self.running:
             now = packet.now_ms()
+            
+            # Skip sending if we don't have a remote address yet
+            if self.remote_addr is None:
+                time.sleep(self.send_interval_ms / 1000.0)
+                continue
             
             # ---- STEP 1: Send DATA frames (new + retransmissions) ----
             # Ask the SR sender what needs to be sent right now
@@ -230,6 +240,10 @@ class UDPIO:
                 # ---- STEP 1: Receive a datagram ----
                 datagram, addr = self.socket.recvfrom(65536)  # Max UDP size
                 
+                # If we don't have a remote address yet (server mode), set it now
+                if self.remote_addr is None:
+                    self.remote_addr = addr
+                
                 # ---- STEP 2: Decode the frame ----
                 frame_type, header, payload = packet.decode_frame(datagram)
                 now = packet.now_ms()
@@ -253,8 +267,18 @@ class UDPIO:
                             metadata = {
                                 'reliable': True,
                                 'seq': del_seq,
+                                'seq_no': del_seq,  # Alternative key for compatibility
+                                'chan_type': chan_type,
+                                'channel_id': chan_type,  # Alternative key
                                 'ts_send': ts_send,
-                                'recv_time': now
+                                'ts_send_ms': ts_send,  # Alternative key
+                                'timestamp': ts_send,  # Alternative key
+                                'recv_time': now,
+                                'from_addr': addr,
+                                'valid': header.get('valid', True),
+                                'rtt_ms': None,  # Will be populated by sender if available
+                                'retransmissions': None,  # Will be populated by sender if available
+                                'num_retx': None,  # Alternative key
                             }
                             self.delivered_queue.put((del_payload, metadata))
                             
@@ -263,8 +287,15 @@ class UDPIO:
                         metadata = {
                             'reliable': False,
                             'seq': header.get('seq_no', 0),
+                            'seq_no': header.get('seq_no', 0),
+                            'chan_type': chan_type,
+                            'channel_id': chan_type,
                             'ts_send': header.get('ts_send', 0),
-                            'recv_time': now
+                            'ts_send_ms': header.get('ts_send', 0),
+                            'timestamp': header.get('ts_send', 0),
+                            'recv_time': now,
+                            'from_addr': addr,
+                            'valid': header.get('valid', True),
                         }
                         self.delivered_queue.put((payload, metadata))
                         
