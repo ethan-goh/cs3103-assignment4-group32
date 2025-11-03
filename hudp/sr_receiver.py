@@ -9,13 +9,33 @@ class SRReceiver:
         self.skip_threshold_ms = skip_threshold_ms
         self.window_size = window_size
 
+    def _seq_diff(self, seq_a: int, seq_b: int) -> int:
+        """
+        Calculate sequence number difference handling 16-bit wraparound.
+        Returns seq_a - seq_b in sequence space.
+        Positive result means seq_a is ahead of seq_b.
+        """
+        diff = (seq_a - seq_b) & 0xFFFF
+        # If difference > 32767, it's actually a negative difference (wrapped around)
+        if diff > 32767:
+            diff -= 65536
+        return diff
+    
     def _in_window(self, seq: int) -> bool:
-        """Check if seq is within the receive window."""
-        return self.expected_seq <= seq < self.expected_seq + self.window_size
+        """
+        Check if seq is within the receive window [expected_seq, expected_seq + window_size).
+        Handles 16-bit sequence number wraparound correctly.
+        """
+        diff = self._seq_diff(seq, self.expected_seq)
+        return 0 <= diff < self.window_size
     
     def _already_have(self, seq: int) -> bool:
-        """Check if we have already received or delivered seq."""
-        return seq < self.expected_seq or seq in self.buffer
+        """
+        Check if we have already received or delivered seq.
+        Handles wraparound: seq is "old" if it's behind expected_seq.
+        """
+        diff = self._seq_diff(seq, self.expected_seq)
+        return diff < 0 or seq in self.buffer
 
     def _maybe_start_gap_timer(self, now_ms: int):
         # If we're blocked by a hole at expected_seq, ensure a gap timer exists
@@ -55,11 +75,20 @@ class SRReceiver:
         """
         deliveries = []
 
-        # ACK every DATA frame (duplicates included)
+        # ACK EVERY reliable DATA frame (even if way ahead of window)
+        # This is more generous than standard SR but prevents retransmission loops
         self.ack_outbox.append(seq)
 
-        # Drop if far outside our receive window (protect memory)
-        if not self._in_window(seq):
+        # Check window bounds for buffering decisions (wraparound-aware)
+        seq_diff = self._seq_diff(seq, self.expected_seq)
+        
+        if seq_diff < 0:
+            # Old packet (already delivered) - ACKed above, but don't buffer
+            # This handles the case where ACK was lost and sender retransmitted
+            return deliveries
+        
+        if seq_diff >= self.window_size:
+            # Packet too far ahead - ACKed above, but don't buffer (protect memory)
             return deliveries
 
         # Duplicate? (already delivered or buffered)
@@ -150,21 +179,94 @@ def test_sr_receiver():
     acks = [receiver.pop_ack(), receiver.pop_ack()]
     print(f"ACKs for duplicates: {acks}\n")
     
-    # Test 4: Window bounds
-    print("=== Test 4: Window Bounds ===")
+    # Test 4: Window Bounds - Within Window (ACK + Buffer)
+    print("=== Test 4: Within Window - ACK + Buffer ===")
+    receiver = SRReceiver(window_size=5, skip_threshold_ms=1000)
+    
+    # Packets within window [0, 5) should be ACKed and buffered
+    delivered = receiver.on_data(2, 102, b"data2", 1000)
+    print(f"Seq 2 (within window [0,5)): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())}")
+    ack = receiver.pop_ack()
+    print(f"ACK sent: {ack}")
+    
+    delivered = receiver.on_data(4, 104, b"data4", 1001)
+    print(f"Seq 4 (within window [0,5)): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())}")
+    ack = receiver.pop_ack()
+    print(f"ACK sent: {ack}\n")
+    
+    # Test 5: Window Bounds - Behind Window (ACK but No Buffer)
+    print("=== Test 5: Behind Window - ACK but No Buffer ===")
+    receiver = SRReceiver(window_size=5, skip_threshold_ms=1000)
+    
+    # Advance the window by delivering some packets
+    receiver.on_data(0, 100, b"data0", 1000)  # expected_seq becomes 1
+    receiver.on_data(1, 101, b"data1", 1001)  # expected_seq becomes 2
+    _ = receiver.pop_ack()  # Clear ACKs
+    _ = receiver.pop_ack()
+    
+    print(f"Window now at expected_seq={receiver.expected_seq}, window=[{receiver.expected_seq},{receiver.expected_seq + receiver.window_size})")
+    
+    # Send old packet (behind window)
+    delivered = receiver.on_data(0, 100, b"data0_retx", 1002)  # seq=0 is behind expected_seq=2
+    print(f"Seq 0 (behind window): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())} (should be empty - not buffered)")
+    ack = receiver.pop_ack()
+    print(f"ACK sent: {ack} (should still ACK old packets)\n")
+    
+    # Test 6: Window Bounds - Ahead of Window (ACK but No Buffer)
+    print("=== Test 6: Ahead of Window - ACK but No Buffer ===")
     receiver = SRReceiver(window_size=3, skip_threshold_ms=1000)  # Small window
     
-    # Try to send packet outside window [0, 3)
-    delivered = receiver.on_data(5, 105, b"data5", 1000)  # Outside window
-    print(f"Seq 5 (outside window [0,3)): delivered={delivered}")
-    print(f"Buffered: {list(receiver.buffer.keys())}")
+    print(f"Window: [{receiver.expected_seq},{receiver.expected_seq + receiver.window_size})")
     
-    # This should not generate an ACK since it's outside window
+    # Send packet way ahead of window [0, 3)
+    delivered = receiver.on_data(10, 110, b"data10", 1000)  # seq=10 is ahead of window
+    print(f"Seq 10 (ahead of window [0,3)): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())} (should be empty - not buffered)")
     ack = receiver.pop_ack()
-    print(f"ACK for out-of-window: {ack}\n")
+    print(f"ACK sent: {ack} (should still ACK ahead packets)\n")
     
-    # Test 5: Skip threshold
-    print("=== Test 5: Skip Threshold ===")
+    # Test 7: Wraparound Window Behavior  
+    print("=== Test 7: Wraparound Window Behavior ===")
+    receiver = SRReceiver(window_size=10, skip_threshold_ms=1000)
+    
+    # Set up near wraparound boundary
+    receiver.expected_seq = 65530  # Window: [65530, 65535, 0, 1, 2, 3, 4]
+    
+    print(f"Expected seq: {receiver.expected_seq}, Window size: {receiver.window_size}")
+    print("Window spans: [65530, 65531, 65532, 65533, 65534, 65535, 0, 1, 2, 3]")
+    
+    # Test within wraparound window
+    delivered = receiver.on_data(65532, 1000, b"data65532", 1000)  # Within window
+    print(f"Seq 65532 (within wraparound window): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())}")
+    ack = receiver.pop_ack()
+    print(f"ACK: {ack}")
+    
+    delivered = receiver.on_data(1, 1001, b"data1", 1001)  # Within window (wrapped)
+    print(f"Seq 1 (within wraparound window): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())}")
+    ack = receiver.pop_ack()
+    print(f"ACK: {ack}")
+    
+    # Test behind wraparound window  
+    delivered = receiver.on_data(65525, 1002, b"data65525", 1002)  # Behind window
+    print(f"Seq 65525 (behind wraparound window): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())} (should not include 65525)")
+    ack = receiver.pop_ack()
+    print(f"ACK: {ack} (should still ACK)")
+    
+    # Test ahead of wraparound window
+    delivered = receiver.on_data(15, 1003, b"data15", 1003)  # Ahead of window
+    print(f"Seq 15 (ahead of wraparound window): delivered={delivered}")
+    print(f"Buffered: {list(receiver.buffer.keys())} (should not include 15)")
+    ack = receiver.pop_ack()
+    print(f"ACK: {ack} (should still ACK)\n")
+    
+    # Test 8: Skip threshold
+    print("=== Test 8: Skip Threshold ===")
     receiver = SRReceiver(window_size=10, skip_threshold_ms=200)  # Short timeout
     
     # Receive seq 2, creating a gap at seq 0,1
