@@ -46,11 +46,19 @@ def run_client(server_host: str,
                              reliable=is_reliable,
                              channel_id=chan_type)
 
-            print(
-                f"[CLIENT SEND] msg_id={msg_id} "
-                f"seq={seq_no} chan={chan_type} "
-                f"reliable={is_reliable} ts={now_ms}"
-            )
+            # Note: send() now automatically retries if buffer is full
+            # Only returns -1 if buffer is still full after retries
+            if is_reliable and seq_no == -1:
+                print(
+                    f"[CLIENT SEND FAILED] msg_id={msg_id} "
+                    f"chan={chan_type} - BUFFER FULL (even after retries), packet dropped"
+                )
+            else:
+                print(
+                    f"[CLIENT SEND] msg_id={msg_id} "
+                    f"seq={seq_no} chan={chan_type} "
+                    f"reliable={is_reliable} ts={now_ms}"
+                )
 
             time.sleep(interval)
 

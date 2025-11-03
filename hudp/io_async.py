@@ -52,6 +52,10 @@ class UDPIO:
         self.sender = SRSender()
         self.receiver = SRReceiver()
         
+        # Store ACK information for metadata population
+        # Maps seq_no -> (rtt_ms, retransmissions)
+        self.ack_info = {}
+        
         # Queue for delivering messages to the application
         # Each item is (payload: bytes, metadata: dict)
         self.delivered_queue = queue.Queue()
@@ -182,16 +186,9 @@ class UDPIO:
             # Ask the SR sender what needs to be sent right now
             frames_to_send = self.sender.next_frames(now)
             
-            for seq, payload in frames_to_send:
-                # Build a reliable DATA frame (chan_type=1 for reliable)
-                frame = packet.encode_data(
-                    ts_send=now,
-                    seq_no=seq,
-                    chan_type=1,        # Reliable channel (chan_type=1)
-                    payload=payload
-                )
-                
-                # Transmit via UDP
+            for seq, frame in frames_to_send:
+                # Frame is already encoded by sr_sender with current timestamp
+                # Just send it directly
                 self.socket.sendto(frame, self.remote_addr)
             
             # ---- STEP 2: Drain and send ACKs ----
@@ -248,6 +245,12 @@ class UDPIO:
                 frame_type, header, payload = packet.decode_frame(datagram)
                 now = packet.now_ms()
                 
+                # ---- STEP 2.5: Validate checksum ----
+                # Drop frames with invalid checksum (corrupted data)
+                if not header.get('valid', False):
+                    # Silently drop corrupted frames
+                    continue
+                
                 # ---- STEP 3: Route based on frame type ----
                 
                 if frame_type == "DATA":
@@ -264,6 +267,9 @@ class UDPIO:
                         
                         # Push all newly-deliverable messages to the app queue
                         for del_seq, del_payload in deliverable:
+                            # Get ACK info if available (RTT and retransmissions)
+                            rtt_ms, retransmissions = self.ack_info.pop(del_seq, (None, None))
+                            
                             metadata = {
                                 'reliable': True,
                                 'seq_no': del_seq,
@@ -271,9 +277,9 @@ class UDPIO:
                                 'ts_send_ms': ts_send,
                                 'recv_time': now,
                                 'from_addr': addr,
-                                'valid': header.get('valid', True),
-                                'rtt_ms': None,  # Will be populated by sender if available
-                                'retransmissions': None,  # Will be populated by sender if available
+                                'valid': True,  # Always True since we drop invalid frames
+                                'rtt_ms': rtt_ms,
+                                'retransmissions': retransmissions,
                             }
                             self.delivered_queue.put((del_payload, metadata))
                             
@@ -286,7 +292,7 @@ class UDPIO:
                             'ts_send_ms': header.get('ts_send', 0),
                             'recv_time': now,
                             'from_addr': addr,
-                            'valid': header.get('valid', True),
+                            'valid': True,  # Always True since we drop invalid frames
                         }
                         self.delivered_queue.put((payload, metadata))
                         
@@ -295,8 +301,12 @@ class UDPIO:
                     ack_no = header['seq_no']  # For ACK frames, seq_no field = ack_no
                     
                     # Notify sender that this packet was acknowledged
-                    # Returns list of (seq, rtt_ms) but we can ignore it for now
-                    self.sender.on_ack(ack_no, now)
+                    # Returns list of (seq, rtt_ms, retransmissions)
+                    ack_results = self.sender.on_ack(ack_no, now)
+                    
+                    # Store ACK info for when the packet is delivered
+                    for seq, rtt, retx in ack_results:
+                        self.ack_info[seq] = (rtt, retx)
                     
             except socket.timeout:
                 # Timeout is expected; just loop again and check if still running
@@ -348,6 +358,8 @@ class UDPIO:
    - Basic try-except around socket operations
    - In production, you'd want proper logging
    - Malformed packets are ignored (decode_frame would raise an exception)
+   - CHECKSUM VALIDATION: Invalid frames (corrupted data) are silently dropped
+     in the recv loop before reaching sr_receiver or the application queue
 
 7. BUFFER FULL HANDLING:
    - send_reliable() returns -1 if sender.queue_reliable() returns -1

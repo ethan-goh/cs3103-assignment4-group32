@@ -64,6 +64,15 @@ class SRReceiver:
             ts_send, payload = entry
             deliveries.append((self.expected_seq, payload))
             self.expected_seq = (self.expected_seq + 1) & 0xFFFF
+        
+        # After draining, if buffer is now empty or we have no gap at expected_seq,
+        # reset the gap timer
+        if not self.buffer or self.expected_seq not in self.buffer:
+            # Check if we have packets ahead but gap at expected_seq
+            has_gap = len(self.buffer) > 0 and self.expected_seq not in self.buffer
+            if not has_gap:
+                self.gap_start_ms = None
+        
         return deliveries
 
 
@@ -95,18 +104,12 @@ class SRReceiver:
         if self._already_have(seq):
             # still ACKed above; nothing else to do
             # but we can still advance skip if a gap was pending
-            if self.gap_start_ms == 0:  # sentinel: need to start now
-                self.gap_start_ms = now_ms
             self._maybe_skip_gap(now_ms)
             deliveries.extend(self._drain_contiguous())
             return deliveries
 
         # Buffer new out-of-order or the expected one
         self.buffer[seq] = (ts_send, payload)
-
-        # If we were waiting to start the gap timer, start it now
-        if self.gap_start_ms == 0:
-            self.gap_start_ms = now_ms
 
         # If this wasn't the expected seq, make sure a gap timer exists
         if seq != self.expected_seq:

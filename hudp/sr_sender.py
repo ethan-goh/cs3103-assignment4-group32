@@ -59,6 +59,7 @@ class SRSender:
             "ts_send": ts_send,
             "last_tx": 0,    # 0 means not yet sent
             "acked": False,
+            "retransmissions": 0,  # Track number of retransmissions
         }
         return seq
 
@@ -77,6 +78,10 @@ class SRSender:
 
             # Send for first time OR retransmit if timeout expired
             if info["last_tx"] == 0 or (now - info["last_tx"]) >= self.rto_ms:
+                # Track retransmissions (first send doesn't count)
+                if info["last_tx"] != 0:
+                    info["retransmissions"] += 1
+                
                 info["last_tx"] = now
                 frame = encode_data(now, seq, info["chan_type"], info["payload"])
                 frames.append((seq, frame))
@@ -84,12 +89,12 @@ class SRSender:
         return frames
 
     # ----------------------------------------------------------------------
-    def on_ack(self, ack_no: int, now: int) -> List[Tuple[int, int]]:
+    def on_ack(self, ack_no: int, now: int) -> List[Tuple[int, int, int]]:
         """
         Handle an incoming ACK for a given sequence number.
         Marks the packet as acknowledged and slides the window if possible.
         Returns:
-            List of (seq_no, rtt_ms) for all packets newly acknowledged.
+            List of (seq_no, rtt_ms, retransmissions) for all packets newly acknowledged.
         """
         if ack_no not in self.unacked:
             return []  # might be duplicate or old ACK
@@ -100,11 +105,12 @@ class SRSender:
 
         pkt_info["acked"] = True
         rtt = now - pkt_info["ts_send"]
+        retransmissions = pkt_info["retransmissions"]
 
         # Try to slide the window base
         self._slide_window()
 
-        return [(ack_no, rtt)]
+        return [(ack_no, rtt, retransmissions)]
 
     # ----------------------------------------------------------------------
     def _slide_window(self):

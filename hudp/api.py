@@ -68,7 +68,8 @@ class GameNet:
         # Automatically start the I/O loops
         self.io.start()
         
-    def send(self, data: bytes, reliable: bool = False, channel_id: int = 0) -> Optional[int]:
+    def send(self, data: bytes, reliable: bool = False, channel_id: int = 0, 
+             max_retries: int = 10, retry_delay_ms: int = 10) -> Optional[int]:
         """
         Send data over the network.
         
@@ -78,25 +79,42 @@ class GameNet:
                      If False, fire-and-forget (no guarantees)
             channel_id: Channel identifier for reliable messages (default: 0)
                        Ignored for unreliable messages
+            max_retries: Maximum number of retry attempts if buffer is full (default: 10)
+                        Only applies to reliable sends
+            retry_delay_ms: Delay in milliseconds between retry attempts (default: 10ms)
         
         Returns:
             - For reliable=True: Returns sequence number (int) if queued successfully,
-                                or -1 if send buffer is full
+                                or -1 if send buffer is still full after max_retries
             - For reliable=False: Returns None (fire-and-forget has no seq number)
         
         Example:
-            # Reliable send (important game state)
+            # Reliable send with default retry (will retry up to 10 times)
             seq = gamenet.send(b"PLAYER_JOINED", reliable=True)
             if seq == -1:
-                print("Send buffer full, try again later")
+                print("Send buffer full after retries, packet dropped")
             
-            # Unreliable send (frequent position updates)
+            # Reliable send with custom retry behavior
+            seq = gamenet.send(b"CRITICAL_DATA", reliable=True, max_retries=50, retry_delay_ms=5)
+            
+            # Unreliable send (frequent position updates, no retries needed)
             gamenet.send(b"pos:100,200", reliable=False)
         """
         if reliable:
-            # Use Selective Repeat protocol
+            # Use Selective Repeat protocol with retry logic
             seq = self.io.send_reliable(data, channel_id)
-            return seq  # Returns seq number or -1 if buffer full
+            
+            # Retry if buffer is full
+            retry_count = 0
+            while seq == -1 and retry_count < max_retries:
+                # Small delay before retry to allow buffer to drain
+                import time
+                time.sleep(retry_delay_ms / 1000.0)
+                
+                seq = self.io.send_reliable(data, channel_id)
+                retry_count += 1
+            
+            return seq  # Returns seq number or -1 if still full after retries
         else:
             # Fire-and-forget (no ACKs, no retransmissions)
             self.io.send_unreliable(data)
@@ -199,13 +217,16 @@ class GameNet:
    - Can immediately use send()/recv() after construction
 
 3. BUFFER FULL HANDLING:
-   - send() returns -1 when reliable buffer is full
-   - Application can decide what to do:
-     * Wait and retry
-     * Drop the message
-     * Raise an exception
-     * Switch to unreliable
-   - We don't make that decision here (keep it flexible)
+   - send() automatically retries if reliable buffer is full (default: 10 retries)
+   - Configurable via max_retries and retry_delay_ms parameters
+   - Small delay (default 10ms) between retries allows send buffer to drain
+   - Returns -1 only if buffer is still full after all retry attempts
+   - Application can:
+     * Use default retry behavior (recommended for most cases)
+     * Customize retry parameters for critical data
+     * Check return value -1 for persistent buffer full condition
+     * For unreliable sends, no retry needed (fire-and-forget)
+   - Retry logic is blocking but brief (max ~100ms with defaults)
 
 4. CONTEXT MANAGER SUPPORT:
    - Supports 'with' statement for automatic cleanup
@@ -250,16 +271,22 @@ class GameNet:
 
 9. COMMON USAGE PATTERNS:
 
-   Pattern 1: Game state updates (reliable)
-       gamenet.send(json.dumps({"event": "player_joined"}).encode(), reliable=True)
+   Pattern 1: Game state updates (reliable with default retry)
+       seq = gamenet.send(json.dumps({"event": "player_joined"}).encode(), reliable=True)
+       if seq == -1:
+           # Buffer full even after 10 retries (rare but possible)
+           log_error("Failed to send critical game state")
    
-   Pattern 2: Position updates (unreliable, high frequency)
+   Pattern 2: Critical data with aggressive retry
+       seq = gamenet.send(critical_data, reliable=True, max_retries=50, retry_delay_ms=5)
+   
+   Pattern 3: Position updates (unreliable, high frequency, no retry needed)
        while game_running:
            pos_data = f"pos:{x},{y},{z}".encode()
            gamenet.send(pos_data, reliable=False)
            time.sleep(0.016)  # ~60 fps
    
-   Pattern 3: Message processing loop
+   Pattern 4: Message processing loop
        while True:
            result = gamenet.recv(timeout=1.0)
            if result:
