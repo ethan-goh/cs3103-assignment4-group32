@@ -10,21 +10,25 @@ This document defines the contracts for implementing a minimal reliable UDP prot
 
 ### Purpose
 
-Define the minimal header and provide functions to build/parse UDP payloads for DATA and ACK frames. |
+Define the minimal header and provide functions to build/parse UDP payloads for DATA and ACK frames.
+A 16-bit checksum is included for integrity verification across header + payload.
 
 ### Required Functions (Exposed API)
 
 #### `encode_data(ver_flags: int, chan_type: int, conn_id: int, seq_no: int, ts_send: int, payload: bytes) -> bytes`
 
 Build a DATA frame (reliable if REL flag set).
+Computes and embeds a 16-bit checksum over the header and payload.
 
 #### `encode_ack(conn_id: int, ack_no: int, ts_send: int) -> bytes`
 
 Build an ACK-only frame (no payload; ACK flag set; seq_no = ack_no).
+Checksum computed the same way as for DATA frames.
 
 #### `decode_frame(datagram: bytes) -> tuple[str, dict, bytes]`
 
 Parse bytes → `("DATA"|"ACK", header_dict, payload)`; for ACK, payload is `b""`.
+If the checksum fails, include "valid": False in header_dict.
 
 #### `now_ms() -> int`
 
