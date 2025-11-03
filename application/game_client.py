@@ -30,7 +30,7 @@ def run_client(server_host: str,
             msg_id += 1
             now_ms = int(time.time() * 1000)
             is_reliable = random.random() < reliable_prob
-            chan_type = 0 if is_reliable else 1  
+            chan_type = 1 if is_reliable else 0  # 1=reliable, 0=unreliable
 
             payload_obj = {
                 "msg_id": msg_id,
