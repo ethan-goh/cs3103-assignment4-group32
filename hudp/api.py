@@ -33,7 +33,7 @@ class GameNet:
     H-UDP protocol without needing to understand the internal SR mechanics.
     """
     
-    def __init__(self, local_addr: Tuple[str, int], remote_addr: Tuple[str, int],
+    def __init__(self, local_addr: Tuple[str, int], remote_addr: Optional[Tuple[str, int]] = None,
                  send_interval_ms: int = 10):
         """
         Initialize the GameNet API.
@@ -44,11 +44,13 @@ class GameNet:
                        - For clients: ("0.0.0.0", 0) for any available port, or specific port
             remote_addr: (host, port) tuple for the remote endpoint
                         - The address where packets will be sent
+                        - For servers: Can be None (will be set on first packet received)
+                        - For clients: Must specify the server address
             send_interval_ms: How often the send loop runs in milliseconds (default: 10)
         
         Example:
-            # Server
-            server = GameNet(local_addr=("0.0.0.0", 6000), remote_addr=("client_ip", 5000))
+            # Server (remote_addr will be set on first packet)
+            server = GameNet(local_addr=("0.0.0.0", 6000))
             
             # Client
             client = GameNet(local_addr=("0.0.0.0", 5000), remote_addr=("server_ip", 6000))
