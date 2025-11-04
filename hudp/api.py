@@ -54,7 +54,7 @@ class GameNet:
             CHAN_RELIABLE: ChannelStats(),
         }
         
-        # Set up metrics callback for tracking ACK sends
+        # Set up metrics callback for tracking ACK sends/receives
         self.io.set_metrics_callback(self._on_metrics_event)
         
         # Automatically start the I/O loops
@@ -67,7 +67,11 @@ class GameNet:
             
         if event_type == 'sent':
             self._stats[channel].on_sent()
-        
+        elif event_type == 'ack_received':
+            # Track ACKs received (for reliable channel only)
+            if channel == CHAN_RELIABLE:
+                self._stats[channel].on_ack_received()
+
     def send(self, data: bytes, reliable: bool = False, channel_id: int = 0, 
              max_retries: int = 10, retry_delay_ms: int = 10) -> Optional[int]:
         """

@@ -10,6 +10,7 @@ class ChannelStats:
         self.sent = 0
         self.received = 0
         self.bytes_recv = 0
+        self.acks_received = 0  # Track ACKs received (for reliable channel)
 
         self.first_recv_ts = None
         self.last_recv_ts = None
@@ -20,6 +21,10 @@ class ChannelStats:
 
     def on_sent(self):
         self.sent += 1
+
+    def on_ack_received(self):
+        """Track when an ACK is received (for reliable channel only)"""
+        self.acks_received += 1
 
     def on_recv(self, send_ts_ms: int, recv_ts_ms: int, payload_len: int):
         self.received += 1
@@ -76,4 +81,5 @@ class ChannelStats:
             "pdr_percent": pdr,
             "self_sent": self.sent,
             "self_received": self.received,
+            "acks_received": self.acks_received,
         }

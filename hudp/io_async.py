@@ -150,7 +150,7 @@ class UDPIO:
         # Track unreliable send in metrics
         if self.metrics_callback:
             self.metrics_callback('sent', 0)  # Channel 0 = unreliable
-            print("yo")
+
 
     def recv(self, timeout: Optional[float] = None) -> Optional[Tuple[bytes, Dict]]:
         """
@@ -209,7 +209,6 @@ class UDPIO:
             while True:
                 ack_no = self.receiver.pop_ack()
                 if ack_no is None:
-
                     break  # No more ACKs to send
                     
                 # Build an ACK-only frame
@@ -225,8 +224,7 @@ class UDPIO:
                 # Track ACK as "sent" in metrics for reliable channel
                 if self.metrics_callback:
                     self.metrics_callback('sent', 1)  # Channel 1 = reliable
-                    print("yo")
-            
+
             # ---- STEP 3: Sleep briefly ----
             # Don't hog the CPU; sleep for the configured interval
             time.sleep(self.send_interval_ms / 1000.0)
@@ -318,10 +316,14 @@ class UDPIO:
                     # Route to SR sender
                     ack_no = header['seq_no']  # For ACK frames, seq_no field = ack_no
                     
+                    # Track ACK as "received" in metrics for reliable channel
+                    if self.metrics_callback:
+                        self.metrics_callback('ack_received', 1)  # Channel 1 = reliable
+                    
                     # Notify sender that this packet was acknowledged
                     # Returns list of (seq, rtt_ms, retransmissions)
                     ack_results = self.sender.on_ack(ack_no, now)
-                    
+
                     # Store ACK info for when the packet is delivered
                     for seq, rtt, retx in ack_results:
                         self.ack_info[seq] = (rtt, retx)

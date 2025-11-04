@@ -64,6 +64,15 @@ def run_client(server_host: str,
 
     except KeyboardInterrupt:
         print("\n[CLIENT] Stopping...")
+        metrics = gn.get_metrics()
+        # === PRINT METRICS HERE ===
+        print("\n=== H-UDP METRICS (per channel) ===")
+        for chan_type, stats in metrics.items():
+            name = "RELIABLE" if chan_type == 1 else "UNRELIABLE"
+            print(f"\nChannel {chan_type} ({name})")
+            print(f"  Packets sent:  {stats['self_sent']}")
+            if chan_type == 1:  # Only show ACK stats for reliable channel
+                print(f"  ACKs received: {stats['acks_received']}")
     finally:
         gn.close()
 
