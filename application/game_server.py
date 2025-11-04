@@ -16,7 +16,7 @@ def run_server(listen_host: str, listen_port: int) -> None:
 
     print(f"[SERVER] Listening on {listen_host}:{listen_port}")
     print("Press Ctrl+C to stop.\n")
-    client_stats = None
+
     try:
         while True:
             result = gn.recv(timeout=None)  
@@ -25,7 +25,6 @@ def run_server(listen_host: str, listen_port: int) -> None:
 
             payload_bytes, meta = result
             now_ms = int(time.time() * 1000)
-            
 
             try:
                 payload = json.loads(payload_bytes.decode("utf-8"))

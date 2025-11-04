@@ -150,6 +150,7 @@ class UDPIO:
         # Track unreliable send in metrics
         if self.metrics_callback:
             self.metrics_callback('sent', 0)  # Channel 0 = unreliable
+            print("yo")
 
     def recv(self, timeout: Optional[float] = None) -> Optional[Tuple[bytes, Dict]]:
         """
@@ -208,6 +209,7 @@ class UDPIO:
             while True:
                 ack_no = self.receiver.pop_ack()
                 if ack_no is None:
+
                     break  # No more ACKs to send
                     
                 # Build an ACK-only frame
@@ -223,6 +225,7 @@ class UDPIO:
                 # Track ACK as "sent" in metrics for reliable channel
                 if self.metrics_callback:
                     self.metrics_callback('sent', 1)  # Channel 1 = reliable
+                    print("yo")
             
             # ---- STEP 3: Sleep briefly ----
             # Don't hog the CPU; sleep for the configured interval
