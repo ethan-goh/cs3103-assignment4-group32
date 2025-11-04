@@ -1,11 +1,13 @@
 """
 sr_sender.py — Selective Repeat Sender for HUDP
 ------------------------------------------------
-Implements the sender-side logic of the Selective Repeat (SR) protocol.
+Implements the sender-side logic of the Selective Repeat (SR) protocol,
+extended with optional timeout-based skipping of lost packets.
 
 Responsibilities:
 - Maintain a fixed-size sliding window of outstanding reliable packets.
 - Handle per-packet timers for retransmissions.
+- Skip lost packets after skip_threshold_ms (to prevent stalling).
 - Update state on receiving ACKs.
 - Compute RTTs for performance metrics.
 
@@ -21,14 +23,16 @@ MAX_SEQ = 65536
 
 
 class SRSender:
-    def __init__(self, window_size: int = 128, rto_ms: int = 200):
+    def __init__(self, window_size: int = 128, rto_ms: int = 200, skip_threshold_ms: int = 200):
         """
         Args:
             window_size: Number of unacked packets allowed at once.
             rto_ms: Retransmission timeout in milliseconds.
+            skip_threshold_ms: Time threshold after which lost packets are skipped.
         """
         self.window_size = window_size
         self.rto_ms = rto_ms
+        self.skip_threshold_ms = skip_threshold_ms
 
         # Base = first unacked packet in window
         self.base = 0
@@ -59,7 +63,7 @@ class SRSender:
             "ts_send": ts_send,
             "last_tx": 0,    # 0 means not yet sent
             "acked": False,
-            "retransmissions": 0,  # Track number of retransmissions
+            "retransmissions": 0,
         }
         return seq
 
@@ -72,6 +76,10 @@ class SRSender:
             List of (seq_no, frame_bytes) tuples ready to send.
         """
         frames = []
+
+        # Check for any timed-out (skipped) packets first
+        self._maybe_skip_lost_packets(now)
+
         for seq, info in list(self.unacked.items()):
             if info["acked"]:
                 continue
@@ -120,6 +128,27 @@ class SRSender:
             self.base = (self.base + 1) % MAX_SEQ
 
     # ----------------------------------------------------------------------
+    def _maybe_skip_lost_packets(self, now: int):
+        """
+        Skip packets that have been unacknowledged beyond skip_threshold_ms.
+        This prevents permanent stalls under persistent loss.
+        """
+        while self.base in self.unacked:
+            pkt = self.unacked[self.base]
+            if pkt["acked"]:
+                del self.unacked[self.base]
+                self.base = (self.base + 1) % MAX_SEQ
+                continue
+
+            elapsed = now - pkt["ts_send"]
+            if elapsed >= self.skip_threshold_ms:
+                print(f"[SENDER] Skipping lost seq={self.base} (>{self.skip_threshold_ms} ms)")
+                del self.unacked[self.base]
+                self.base = (self.base + 1) % MAX_SEQ
+            else:
+                break  # stop once the first non-expired packet is reached
+
+    # ----------------------------------------------------------------------
     def _window_full(self) -> bool:
         """Return True if the sender window is currently full."""
         unacked_count = len([s for s, p in self.unacked.items() if not p["acked"]])
@@ -145,7 +174,7 @@ class SRSender:
 if __name__ == "__main__":
     import time
 
-    sender = SRSender(window_size=4, rto_ms=200)
+    sender = SRSender(window_size=4, rto_ms=200, skip_threshold_ms=300)
     data = b"Hello world"
 
     # Queue a few packets
@@ -162,10 +191,7 @@ if __name__ == "__main__":
     acked = sender.on_ack(0, now_ms())
     print("ACKed:", acked)
 
-    # Check window after ACK
-    print("Window state:", sender.get_window_state())
-
-    # Simulate retransmit check
-    time.sleep(0.25)
-    frames = sender.next_frames(now_ms())
-    print(f"Frames to retransmit: {[seq for seq, _ in frames]}")
+    # Wait long enough for skip logic to trigger
+    time.sleep(0.4)
+    sender.next_frames(now_ms())  # triggers skip
+    print("Window state after skip:", sender.get_window_state())
