@@ -23,6 +23,7 @@ Usage Example:
 
 from typing import Optional, Tuple, Dict
 from .io_async import UDPIO
+from .metrics import ChannelStats, CHAN_RELIABLE, CHAN_UNRELIABLE
 
 
 class GameNet:
@@ -64,7 +65,10 @@ class GameNet:
             remote_addr=remote_addr,
             send_interval_ms=send_interval_ms
         )
-        
+        self._stats = {
+            CHAN_UNRELIABLE: ChannelStats(),
+            CHAN_RELIABLE: ChannelStats(),
+        }
         # Automatically start the I/O loops
         self.io.start()
         
@@ -100,8 +104,13 @@ class GameNet:
             # Unreliable send (frequent position updates, no retries needed)
             gamenet.send(b"pos:100,200", reliable=False)
         """
+        chan = channel_id
+        if chan not in self._stats:
+            self._stats[chan] = ChannelStats()
+
         if reliable:
             # Use Selective Repeat protocol with retry logic
+            self._stats[chan].on_sent()
             seq = self.io.send_reliable(data, channel_id)
             
             # Retry if buffer is full
@@ -117,6 +126,7 @@ class GameNet:
             return seq  # Returns seq number or -1 if still full after retries
         else:
             # Fire-and-forget (no ACKs, no retransmissions)
+            self._stats[chan].on_sent()
             self.io.send_unreliable(data)
             return None  # Unreliable sends don't have sequence numbers
             
@@ -161,7 +171,37 @@ class GameNet:
                 payload, meta = result
                 # Process message
         """
-        return self.io.recv(timeout)
+        result = self.io.recv(timeout)
+        if result is None:
+            return None
+
+        payload, meta = result
+
+        chan = meta.get("chan_type", CHAN_UNRELIABLE)
+        if chan not in self._stats:
+            self._stats[chan] = ChannelStats()
+
+        ts_send = meta.get("ts_send_ms", 0)
+        ts_recv = meta.get("recv_time", 0)
+        self._stats[chan].on_recv(send_ts_ms=ts_send,
+                                  recv_ts_ms=ts_recv,
+                                  payload_len=len(payload))
+
+        return payload, meta
+    
+    def get_metrics(self) -> Dict[int, Dict]:
+        """
+        Return per-channel performance metrics.
+
+        Returns:
+            {chan_type: {
+                "avg_latency_ms": ...,
+                "jitter_ms": ...,
+                "throughput_Bps": ...,
+                "pdr_percent": ...
+            }}
+        """
+        return {chan: stats.summary() for chan, stats in self._stats.items()}
         
     def close(self):
         """

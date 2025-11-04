@@ -57,4 +57,6 @@ class ChannelStats:
             "jitter_ms": self.jitter,
             "throughput_Bps": throughput,
             "pdr_percent": pdr,
+            "self_received": self.received,
+            "self_sent": self.sent,
         }

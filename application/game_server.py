@@ -49,6 +49,8 @@ def run_server(listen_host: str, listen_port: int) -> None:
 
     except KeyboardInterrupt:
         print("\n[SERVER] Stopping...")
+        # === PRINT METRICS HERE ===
+
     finally:
         gn.close()
 
