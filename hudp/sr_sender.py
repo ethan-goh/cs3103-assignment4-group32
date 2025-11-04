@@ -23,7 +23,7 @@ MAX_SEQ = 65536
 
 
 class SRSender:
-    def __init__(self, window_size: int = 128, rto_ms: int = 200, skip_threshold_ms: int = 200):
+    def __init__(self, window_size: int = 128, rto_ms: int = 50, skip_threshold_ms: int = 200):
         """
         Args:
             window_size: Number of unacked packets allowed at once.
