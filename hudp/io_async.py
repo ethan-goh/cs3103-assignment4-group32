@@ -16,6 +16,7 @@ import socket
 import threading
 import queue
 import time
+import json
 from typing import Optional, Tuple, Dict
 
 from . import packet
@@ -30,7 +31,7 @@ class UDPIO:
     """
     
     def __init__(self, local_addr: Tuple[str, int], remote_addr: Optional[Tuple[str, int]] = None, 
-                 send_interval_ms: int = 10):
+                 send_interval_ms: int = 10, stats_sync_interval: float = 5.0):
         """
         Initialize the UDP I/O adapter.
         
@@ -39,10 +40,12 @@ class UDPIO:
             remote_addr: (host, port) tuple for the remote endpoint
                         Can be None for server mode (will be set on first recv)
             send_interval_ms: How often the send loop runs (milliseconds)
+            stats_sync_interval: How often to exchange statistics (seconds)
         """
         self.local_addr = local_addr
         self.remote_addr = remote_addr
         self.send_interval_ms = send_interval_ms
+        self.stats_sync_interval = stats_sync_interval
         
         # Create UDP socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -63,6 +66,24 @@ class UDPIO:
         # Callback for metrics tracking (set by api.py)
         self.metrics_callback = None
         
+        # Statistics tracking for STATS_SYNC
+        self.stats_lock = threading.Lock()
+        self.reliable_sent = 0
+        self.unreliable_sent = 0
+        self.reliable_received = 0
+        self.unreliable_received = 0
+        self.acks_sent = 0      # Track ACKs sent (server perspective)
+        self.acks_received = 0  # Track ACKs received (client perspective)
+        self.peer_stats = {
+            'reliable_sent': 0,
+            'unreliable_sent': 0,
+            'reliable_received': 0,
+            'unreliable_received': 0,
+            'acks_sent': 0,
+            'acks_received': 0
+        }
+        self.last_stats_sync = 0
+        
         # Threading control
         self.running = False
         self.send_thread: Optional[threading.Thread] = None
@@ -71,6 +92,44 @@ class UDPIO:
     def set_metrics_callback(self, callback):
         """Set callback function for metrics tracking."""
         self.metrics_callback = callback
+        
+    def get_local_stats(self):
+        """Get current local statistics."""
+        with self.stats_lock:
+            return {
+                'reliable_sent': self.reliable_sent,
+                'unreliable_sent': self.unreliable_sent,
+                'reliable_received': self.reliable_received,
+                'unreliable_received': self.unreliable_received,
+                'acks_sent': self.acks_sent,
+                'acks_received': self.acks_received
+            }
+    
+    def get_peer_stats(self):
+        """Get current peer statistics."""
+        with self.stats_lock:
+            return self.peer_stats.copy()
+    
+    def send_final_stats(self):
+        """Send final statistics before shutdown."""
+        if self.remote_addr is None:
+            return
+        
+        with self.stats_lock:
+            stats_frame = packet.encode_stats_sync(
+                reliable_sent=self.reliable_sent,
+                unreliable_sent=self.unreliable_sent,
+                reliable_received=self.reliable_received,
+                unreliable_received=self.unreliable_received,
+                acks_sent=self.acks_sent,
+                acks_received=self.acks_received
+            )
+        
+        # Send final stats (fire-and-forget)
+        try:
+            self.socket.sendto(stats_frame, self.remote_addr)
+        except:
+            pass  # Best effort on shutdown
         
     def start(self):
         """
@@ -96,6 +155,9 @@ class UDPIO:
         """
         if not self.running:
             return
+        
+        # Send final stats before closing
+        self.send_final_stats()
             
         self.running = False
         
@@ -121,6 +183,11 @@ class UDPIO:
         """
         # Queue the data in the SR sender's window
         seq = self.sender.queue_reliable(data, channel_id)
+        
+        if seq != -1:  # Successfully queued
+            with self.stats_lock:
+                self.reliable_sent += 1
+        
         return seq
         
     def send_unreliable(self, data: bytes):
@@ -146,6 +213,10 @@ class UDPIO:
         
         # Send immediately (fire-and-forget)
         self.socket.sendto(frame, self.remote_addr)
+        
+        # Track unreliable send
+        with self.stats_lock:
+            self.unreliable_sent += 1
         
         # Track unreliable send in metrics
         if self.metrics_callback:
@@ -184,7 +255,8 @@ class UDPIO:
         1. Asks sr_sender for frames to send (new + timed-out retransmissions)
         2. Transmits those DATA frames
         3. Drains ACKs from sr_receiver and sends ACK-only frames
-        4. Sleeps briefly before repeating
+        4. Sends periodic STATS_SYNC messages
+        5. Sleeps briefly before repeating
         """
         while self.running:
             now = packet.now_ms()
@@ -221,11 +293,33 @@ class UDPIO:
                 # Transmit the ACK
                 self.socket.sendto(ack_frame, self.remote_addr)
                 
+                # Track ACK as sent (server perspective)
+                with self.stats_lock:
+                    self.acks_sent += 1
+                
                 # Track ACK as "sent" in metrics for reliable channel
                 if self.metrics_callback:
                     self.metrics_callback('sent', 1)  # Channel 1 = reliable
 
-            # ---- STEP 3: Sleep briefly ----
+            # ---- STEP 3: Send periodic STATS_SYNC ----
+            current_time = time.time()
+            if current_time - self.last_stats_sync >= self.stats_sync_interval:
+                self.last_stats_sync = current_time
+                
+                with self.stats_lock:
+                    stats_frame = packet.encode_stats_sync(
+                        reliable_sent=self.reliable_sent,
+                        unreliable_sent=self.unreliable_sent,
+                        reliable_received=self.reliable_received,
+                        unreliable_received=self.unreliable_received,
+                        acks_sent=self.acks_sent,
+                        acks_received=self.acks_received
+                    )
+                
+                # Send STATS_SYNC as reliable (will be handled by SR)
+                self.socket.sendto(stats_frame, self.remote_addr)
+
+            # ---- STEP 4: Sleep briefly ----
             # Don't hog the CPU; sleep for the configured interval
             time.sleep(self.send_interval_ms / 1000.0)
             
@@ -244,6 +338,7 @@ class UDPIO:
            - Reliable DATA → sr_receiver.on_data()
            - Unreliable DATA → directly to app queue
         4. Routes ACK frames to sr_sender.on_ack()
+        5. Routes STATS_SYNC frames to stats handler
         """
         # Set a timeout on the socket so we can periodically check self.running
         self.socket.settimeout(0.1)  # 100ms timeout
@@ -269,11 +364,32 @@ class UDPIO:
                 
                 # ---- STEP 3: Route based on frame type ----
                 
-                if frame_type == "DATA":
+                if frame_type == "STATS_SYNC":
+                    # Handle statistics synchronization (invisible to application)
+                    try:
+                        stats_data = json.loads(payload.decode('utf-8'))
+                        with self.stats_lock:
+                            self.peer_stats['reliable_sent'] = stats_data.get('reliable_sent', 0)
+                            self.peer_stats['unreliable_sent'] = stats_data.get('unreliable_sent', 0)
+                            self.peer_stats['reliable_received'] = stats_data.get('reliable_received', 0)
+                            self.peer_stats['unreliable_received'] = stats_data.get('unreliable_received', 0)
+                            self.peer_stats['acks_sent'] = stats_data.get('acks_sent', 0)
+                            self.peer_stats['acks_received'] = stats_data.get('acks_received', 0)
+                    except (json.JSONDecodeError, KeyError):
+                        # Malformed STATS_SYNC, ignore
+                        pass
+                    # Don't deliver STATS_SYNC to application
+                    continue
+                
+                elif frame_type == "DATA":
                     # Check if reliable or unreliable
                     chan_type = header.get('chan_type', 0)
                     
                     if chan_type == 1:  # Reliable DATA (chan_type=1)
+                        # Track received
+                        with self.stats_lock:
+                            self.reliable_received += 1
+                        
                         # Route to SR receiver
                         seq = header['seq_no']
                         ts_send = header['ts_send']
@@ -300,6 +416,10 @@ class UDPIO:
                             self.delivered_queue.put((del_payload, metadata))
                             
                     else:  # Unreliable DATA (chan_type=0)
+                        # Track received
+                        with self.stats_lock:
+                            self.unreliable_received += 1
+                        
                         # Deliver directly to app queue (no SR logic)
                         metadata = {
                             'reliable': False,
@@ -313,15 +433,16 @@ class UDPIO:
                         self.delivered_queue.put((payload, metadata))
                         
                 elif frame_type == "ACK":
-                    # Route to SR sender
-                    ack_no = header['seq_no']  # For ACK frames, seq_no field = ack_no
+                    # Track ACK as received (client perspective)
+                    with self.stats_lock:
+                        self.acks_received += 1
                     
                     # Track ACK as "received" in metrics for reliable channel
                     if self.metrics_callback:
                         self.metrics_callback('ack_received', 1)  # Channel 1 = reliable
                     
-                    # Notify sender that this packet was acknowledged
-                    # Returns list of (seq, rtt_ms, retransmissions)
+                    # Route to SR sender
+                    ack_no = header['seq_no']
                     ack_results = self.sender.on_ack(ack_no, now)
 
                     # Store ACK info for when the packet is delivered

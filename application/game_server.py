@@ -51,17 +51,24 @@ def run_server(listen_host: str, listen_port: int) -> None:
     except KeyboardInterrupt:
         print("\n[SERVER] Stopping...")
         metrics = gn.get_metrics()
-        # === PRINT METRICS HERE ===
-        print("\n=== H-UDP METRICS (per channel) ===")
+        # === PRINT COMPLETE METRICS ===
+        print("\n=== H-UDP COMPLETE METRICS (per channel) ===")
         for chan_type, stats in metrics.items():
             name = "RELIABLE" if chan_type == 1 else "UNRELIABLE"
             print(f"\nChannel {chan_type} ({name})")
-            print(f"  Avg latency:   {stats['avg_latency_ms']:.2f} ms")
-            print(f"  Jitter (RFC3550-style): {stats['jitter_ms']:.2f} ms")
-            print(f"  Throughput:    {stats['throughput_Bps']:.2f} B/s")
-            if chan_type == 1:  # Only show sent packets for reliable channel (ACKs)
-                print(f"  ACKs sent:     {stats['self_sent']}")
-            print(f"  Packets recv:  {stats['self_received']}")
+            print(f"  === LOCAL STATS ===")
+            print(f"  Packets sent:      {stats['self_sent']}")
+            print(f"  Packets received:  {stats['self_received']}")
+            print(f"  === PEER STATS ===")
+            print(f"  Peer sent:         {stats['peer_sent']}")
+            print(f"  Peer received:     {stats['peer_received']}")
+            print(f"  === COMPUTED METRICS ===")
+            print(f"  PDR (Packet Delivery Ratio): {stats['pdr_percent']:.2f}%")
+            print(f"  Avg latency:       {stats['avg_latency_ms']:.2f} ms")
+            print(f"  Jitter (RFC3550):  {stats['jitter_ms']:.2f} ms")
+            print(f"  Throughput:        {stats['throughput_Bps']:.2f} B/s")
+            if chan_type == 1:  # Only show ACK stats for reliable channel
+                print(f"  ACKs received:     {stats['acks_received']}")
     finally:
         gn.close()
 

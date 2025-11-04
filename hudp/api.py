@@ -19,7 +19,7 @@ class GameNet:
     """
     
     def __init__(self, local_addr: Tuple[str, int], remote_addr: Optional[Tuple[str, int]] = None,
-                 send_interval_ms: int = 10):
+                 send_interval_ms: int = 10, stats_sync_interval: float = 5.0):
         """
         Initialize the GameNet API.
         
@@ -32,6 +32,7 @@ class GameNet:
                         - For servers: Can be None (will be set on first packet received)
                         - For clients: Must specify the server address
             send_interval_ms: How often the send loop runs in milliseconds (default: 10)
+            stats_sync_interval: How often to exchange statistics in seconds (default: 5.0)
         
         Example:
             # Server (remote_addr will be set on first packet)
@@ -47,7 +48,8 @@ class GameNet:
         self.io = UDPIO(
             local_addr=local_addr,
             remote_addr=remote_addr,
-            send_interval_ms=send_interval_ms
+            send_interval_ms=send_interval_ms,
+            stats_sync_interval=stats_sync_interval
         )
         self._stats = {
             CHAN_UNRELIABLE: ChannelStats(),
@@ -111,7 +113,6 @@ class GameNet:
 
         if reliable:
             # Use Selective Repeat protocol with retry logic
-            self._stats[chan].on_sent()
             seq = self.io.send_reliable(data, channel_id)
             
             # Retry if buffer is full
@@ -127,7 +128,6 @@ class GameNet:
             return seq  # Returns seq number or -1 if still full after retries
         else:
             # Fire-and-forget (no ACKs, no retransmissions)
-            self._stats[chan].on_sent()
             self.io.send_unreliable(data)
             return None  # Unreliable sends don't have sequence numbers
             
@@ -192,20 +192,34 @@ class GameNet:
     
     def get_metrics(self) -> Dict[int, Dict]:
         """
-        Return per-channel performance metrics.
-
-        Returns:
-            {chan_type: {
-                "avg_latency_ms": ...,
-                "jitter_ms": ...,
-                "throughput_Bps": ...,
-                "pdr_percent": ...,
-                "self_sent": ...,
-                "self_received": ...
-            }}
+        Return per-channel performance metrics with complete PDR data.
         """
-        return {chan: stats.summary() for chan, stats in self._stats.items()}
+        # Update peer statistics from UDPIO before calculating metrics
+        local_stats = self.io.get_local_stats()
+        peer_stats = self.io.get_peer_stats()
         
+        # Update channel stats with peer data for PDR calculation
+        if CHAN_RELIABLE in self._stats:
+            self._stats[CHAN_RELIABLE].update_peer_stats(
+                peer_stats['reliable_sent'], 
+                peer_stats['reliable_received'],
+                peer_stats.get('acks_sent', 0),
+                peer_stats.get('acks_received', 0)
+            )
+        
+        if CHAN_UNRELIABLE in self._stats:
+            self._stats[CHAN_UNRELIABLE].update_peer_stats(
+                peer_stats['unreliable_sent'],
+                peer_stats['unreliable_received']
+            )
+        
+        # Generate summaries with channel type information
+        result = {}
+        for chan, stats in self._stats.items():
+            result[chan] = stats.summary(channel_type=chan)
+        
+        return result
+
     def close(self):
         """
         Shut down the connection and clean up resources.
