@@ -3,22 +3,6 @@ api.py - Minimal GameNet Façade
 
 This is the clean API that applications use to send/receive messages.
 It wraps the UDPIO layer and provides a simple, user-friendly interface.
-
-Usage Example:
-    # Client side
-    gamenet = GameNet(local_addr=("0.0.0.0", 5000), remote_addr=("server.com", 6000))
-    
-    # Send reliable message
-    seq = gamenet.send(b"Hello", reliable=True)
-    
-    # Send unreliable message (fire-and-forget)
-    gamenet.send(b"position update", reliable=False)
-    
-    # Receive message (blocking)
-    payload, meta = gamenet.recv(timeout=1.0)
-    
-    # Clean up
-    gamenet.close()
 """
 
 from typing import Optional, Tuple, Dict
@@ -69,8 +53,20 @@ class GameNet:
             CHAN_UNRELIABLE: ChannelStats(),
             CHAN_RELIABLE: ChannelStats(),
         }
+        
+        # Set up metrics callback for tracking ACK sends
+        self.io.set_metrics_callback(self._on_metrics_event)
+        
         # Automatically start the I/O loops
         self.io.start()
+
+    def _on_metrics_event(self, event_type: str, channel: int):
+        """Handle metrics events from the I/O layer."""
+        if channel not in self._stats:
+            self._stats[channel] = ChannelStats()
+            
+        if event_type == 'sent':
+            self._stats[channel].on_sent()
         
     def send(self, data: bytes, reliable: bool = False, channel_id: int = 0, 
              max_retries: int = 10, retry_delay_ms: int = 10) -> Optional[int]:
@@ -104,7 +100,8 @@ class GameNet:
             # Unreliable send (frequent position updates, no retries needed)
             gamenet.send(b"pos:100,200", reliable=False)
         """
-        chan = channel_id
+        # Use proper channel type for metrics (0=unreliable, 1=reliable)
+        chan = 1 if reliable else 0
         if chan not in self._stats:
             self._stats[chan] = ChannelStats()
 
@@ -198,7 +195,9 @@ class GameNet:
                 "avg_latency_ms": ...,
                 "jitter_ms": ...,
                 "throughput_Bps": ...,
-                "pdr_percent": ...
+                "pdr_percent": ...,
+                "self_sent": ...,
+                "self_received": ...
             }}
         """
         return {chan: stats.summary() for chan, stats in self._stats.items()}

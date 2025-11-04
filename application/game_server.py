@@ -2,6 +2,7 @@ import argparse
 import json
 import time
 
+from hudp import metrics
 from hudp.api import GameNet
 
 
@@ -15,7 +16,7 @@ def run_server(listen_host: str, listen_port: int) -> None:
 
     print(f"[SERVER] Listening on {listen_host}:{listen_port}")
     print("Press Ctrl+C to stop.\n")
-
+    client_stats = None
     try:
         while True:
             result = gn.recv(timeout=None)  
@@ -24,6 +25,7 @@ def run_server(listen_host: str, listen_port: int) -> None:
 
             payload_bytes, meta = result
             now_ms = int(time.time() * 1000)
+            
 
             try:
                 payload = json.loads(payload_bytes.decode("utf-8"))
@@ -49,8 +51,18 @@ def run_server(listen_host: str, listen_port: int) -> None:
 
     except KeyboardInterrupt:
         print("\n[SERVER] Stopping...")
+        metrics = gn.get_metrics()
         # === PRINT METRICS HERE ===
-
+        print("\n=== H-UDP METRICS (per channel) ===")
+        for chan_type, stats in metrics.items():
+            name = "RELIABLE" if chan_type == 1 else "UNRELIABLE"
+            print(f"\nChannel {chan_type} ({name})")
+            print(f"  Avg latency:   {stats['avg_latency_ms']:.2f} ms")
+            print(f"  Jitter (RFC3550-style): {stats['jitter_ms']:.2f} ms")
+            print(f"  Throughput:    {stats['throughput_Bps']:.2f} B/s")
+            print(f"  PDR:           {stats['pdr_percent']:.2f} %")
+            print(f"  Packets sent:  {stats['self_sent']}")
+            print(f"  Packets recv:  {stats['self_received']}")
     finally:
         gn.close()
 

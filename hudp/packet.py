@@ -18,8 +18,8 @@ HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 9 bytes
 # Utility helpers
 # ---------------------------------------------------------------------
 def now_ms() -> int:
-    """Return current time in milliseconds since epoch."""
-    return int(time.time() * 1000)
+    """Return current time in milliseconds since epoch, modulo 2^32."""
+    return int(time.time() * 1000) & 0xFFFFFFFF
 
 
 def _crc16(data: bytes) -> int:

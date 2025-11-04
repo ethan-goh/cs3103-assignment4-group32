@@ -2,7 +2,7 @@ import argparse
 import json
 import random
 import time
-from hudp import metrics
+
 from hudp.api import GameNet
 
 
@@ -64,17 +64,6 @@ def run_client(server_host: str,
 
     except KeyboardInterrupt:
         print("\n[CLIENT] Stopping...")
-        metrics = gn.get_metrics()
-        print("\n=== H-UDP METRICS (per channel) ===")
-        for chan_type, stats in metrics.items():
-            name = "RELIABLE" if chan_type == 1 else "UNRELIABLE"
-            print(f"\nChannel {chan_type} ({name})")
-            print(f"  Avg latency:   {stats['avg_latency_ms']:.2f} ms")
-            print(f"  Jitter (RFC3550-style): {stats['jitter_ms']:.2f} ms")
-            print(f"  Throughput:    {stats['throughput_Bps']:.2f} B/s")
-            print(f"  PDR:           {stats['pdr_percent']:.2f} %")
-            print(f"  Packets sent:  {stats['self_sent']}")
-            print(f"  Packets recv:  {stats['self_received']}")
     finally:
         gn.close()
 

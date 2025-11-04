@@ -60,10 +60,17 @@ class UDPIO:
         # Each item is (payload: bytes, metadata: dict)
         self.delivered_queue = queue.Queue()
         
+        # Callback for metrics tracking (set by api.py)
+        self.metrics_callback = None
+        
         # Threading control
         self.running = False
         self.send_thread: Optional[threading.Thread] = None
         self.recv_thread: Optional[threading.Thread] = None
+
+    def set_metrics_callback(self, callback):
+        """Set callback function for metrics tracking."""
+        self.metrics_callback = callback
         
     def start(self):
         """
@@ -140,6 +147,10 @@ class UDPIO:
         # Send immediately (fire-and-forget)
         self.socket.sendto(frame, self.remote_addr)
         
+        # Track unreliable send in metrics
+        if self.metrics_callback:
+            self.metrics_callback('sent', 0)  # Channel 0 = unreliable
+
     def recv(self, timeout: Optional[float] = None) -> Optional[Tuple[bytes, Dict]]:
         """
         Receive a delivered message (blocking).
@@ -208,6 +219,10 @@ class UDPIO:
                 
                 # Transmit the ACK
                 self.socket.sendto(ack_frame, self.remote_addr)
+                
+                # Track ACK as "sent" in metrics for reliable channel
+                if self.metrics_callback:
+                    self.metrics_callback('sent', 1)  # Channel 1 = reliable
             
             # ---- STEP 3: Sleep briefly ----
             # Don't hog the CPU; sleep for the configured interval
