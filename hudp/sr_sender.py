@@ -41,6 +41,15 @@ class SRSender:
 
         # Outstanding packets (seq → info dict)
         self.unacked: Dict[int, dict] = {}
+    
+    def update_rto(self, new_rto_ms: int):
+        """
+        Dynamically update RTO for adaptive parameter control.
+        
+        Args:
+            new_rto_ms: New retransmission timeout in milliseconds
+        """
+        self.rto_ms = new_rto_ms
 
     # ----------------------------------------------------------------------
     def queue_reliable(self, data: bytes, chan_type: int = 1) -> int:
@@ -91,7 +100,9 @@ class SRSender:
                     info["retransmissions"] += 1
                 
                 info["last_tx"] = now
-                frame = encode_data(now, seq, info["chan_type"], info["payload"])
+                # Use ORIGINAL timestamp (ts_send) not current time (now)
+                # This ensures latency reflects total time including retransmissions
+                frame = encode_data(info["ts_send"], seq, info["chan_type"], info["payload"])
                 frames.append((seq, frame))
 
         return frames

@@ -1,0 +1,83 @@
+{
+  "timestamp": "2025-11-07T12:37:19.407982",
+  "adaptive": true,
+  "rto_ms": 100,
+  "skip_threshold": 200,
+  "scenarios": {
+    "ideal": {
+      "network": {
+        "delay": "0ms",
+        "loss": 0,
+        "bandwidth": 2
+      },
+      "metrics": {
+        "unreliable": {
+          "pdr": 100.0,
+          "latency": 0.3,
+          "jitter": 0.3,
+          "throughput": 2402.0,
+          "sent": 0,
+          "received": 346
+        },
+        "reliable": {
+          "pdr": 100.0,
+          "latency": 3.8,
+          "jitter": 1.4,
+          "throughput": 2527.0,
+          "sent": 0,
+          "received": 368
+        }
+      }
+    },
+    "typical_internet": {
+      "network": {
+        "delay": "5ms",
+        "loss": 1,
+        "bandwidth": 2
+      },
+      "metrics": {
+        "unreliable": {
+          "pdr": 98.2,
+          "latency": 11.1,
+          "jitter": 0.5,
+          "throughput": 2512.0,
+          "sent": 0,
+          "received": 1078
+        },
+        "reliable": {
+          "pdr": 100.0,
+          "latency": 14.3,
+          "jitter": 4.0,
+          "throughput": 2430.0,
+          "sent": 0,
+          "received": 1056
+        }
+      }
+    },
+    "high_congestion": {
+      "network": {
+        "delay": "20ms",
+        "loss": 20,
+        "bandwidth": 2
+      },
+      "metrics": {
+        "unreliable": {
+          "pdr": 71.2,
+          "latency": 41.0,
+          "jitter": 0.9,
+          "throughput": 1752.0,
+          "sent": 0,
+          "received": 755
+        },
+        "reliable": {
+          "pdr": 99.1,
+          "latency": 110.4,
+          "jitter": 41.4,
+          "throughput": 2475.0,
+          "sent": 0,
+          "received": 1078
+        }
+      }
+    }
+  }
+}

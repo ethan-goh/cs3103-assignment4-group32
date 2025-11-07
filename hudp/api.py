@@ -19,7 +19,9 @@ class GameNet:
     """
     
     def __init__(self, local_addr: Tuple[str, int], remote_addr: Optional[Tuple[str, int]] = None,
-                 send_interval_ms: int = 10, stats_sync_interval: float = 5.0):
+                 send_interval_ms: int = 10, stats_sync_interval: float = 2.0,
+                 rto_ms: int = 50, skip_threshold_ms: int = 200, 
+                 window_size: int = 10, adaptive: bool = False):
         """
         Initialize the GameNet API.
         
@@ -33,13 +35,21 @@ class GameNet:
                         - For clients: Must specify the server address
             send_interval_ms: How often the send loop runs in milliseconds (default: 10)
             stats_sync_interval: How often to exchange statistics in seconds (default: 5.0)
+            rto_ms: Retransmission timeout in milliseconds (default: 50)
+            skip_threshold_ms: Skip threshold for lost packets in milliseconds (default: 200)
+            adaptive: Enable adaptive RTO and skip threshold tuning (default: False)
         
         Example:
             # Server (remote_addr will be set on first packet)
             server = GameNet(local_addr=("0.0.0.0", 6000))
             
-            # Client
-            client = GameNet(local_addr=("0.0.0.0", 5000), remote_addr=("server_ip", 6000))
+            # Client with custom parameters
+            client = GameNet(local_addr=("0.0.0.0", 5000), remote_addr=("server_ip", 6000),
+                           rto_ms=70, skip_threshold_ms=250)
+            
+            # Client with adaptive parameters
+            adaptive_client = GameNet(local_addr=("0.0.0.0", 5000), remote_addr=("server_ip", 6000),
+                                    adaptive=True)
         """
         self.local_addr = local_addr
         self.remote_addr = remote_addr
@@ -49,7 +59,10 @@ class GameNet:
             local_addr=local_addr,
             remote_addr=remote_addr,
             send_interval_ms=send_interval_ms,
-            stats_sync_interval=stats_sync_interval
+            stats_sync_interval=stats_sync_interval,
+            rto_ms=rto_ms,
+            skip_threshold_ms=skip_threshold_ms,
+            adaptive=adaptive
         )
         self._stats = {
             CHAN_UNRELIABLE: ChannelStats(),
@@ -62,15 +75,40 @@ class GameNet:
         # Automatically start the I/O loops
         self.io.start()
 
-    def _on_metrics_event(self, event_type: str, channel: int):
+    def _on_metrics_event(self, event_type: str, channel_or_data):
         """Handle metrics events from the I/O layer."""
-        if channel not in self._stats:
-            self._stats[channel] = ChannelStats()
+        if event_type == 'stats_sync_rtt':
+            # Handle RTT measurement from STATS_SYNC (for client-side metrics)
+            rtt_data = channel_or_data
+            rtt_ms = rtt_data.get('rtt_ms', 0)
+            recv_ts = rtt_data.get('recv_ts', 0)
             
-        if event_type == 'sent':
-            self._stats[channel].on_sent()
+            # DEBUG: Uncomment to verify this callback is being invoked
+            print(f"[DEBUG api.py] stats_sync_rtt: rtt_ms={rtt_ms}, recv_ts={recv_ts}")
+            
+            # RTT is a connection-level metric, not per-channel
+            # Update only the reliable channel stats (clients typically care about reliable latency)
+            # Note: We could alternatively track this separately, but for now we use reliable channel
+            if CHAN_RELIABLE not in self._stats:
+                self._stats[CHAN_RELIABLE] = ChannelStats()
+            self._stats[CHAN_RELIABLE].on_stats_sync_rtt(rtt_ms, recv_ts)
+        elif event_type == 'sent':
+            # Handle sent packet tracking with payload size and timestamp
+            send_data = channel_or_data
+            channel = send_data.get('channel', 0)
+            payload_len = send_data.get('payload_len', 0)
+            ts_ms = send_data.get('ts_ms', 0)
+            
+            if channel not in self._stats:
+                self._stats[channel] = ChannelStats()
+            
+            self._stats[channel].on_sent(payload_len, ts_ms)
         elif event_type == 'ack_received':
-            # Track ACKs received (for reliable channel only)
+            # Handle ACK received event (for reliable channel only)
+            channel = channel_or_data
+            if channel not in self._stats:
+                self._stats[channel] = ChannelStats()
+                
             if channel == CHAN_RELIABLE:
                 self._stats[channel].on_ack_received()
 
@@ -184,9 +222,22 @@ class GameNet:
 
         ts_send = meta.get("ts_send_ms", 0)
         ts_recv = meta.get("recv_time", 0)
-        self._stats[chan].on_recv(send_ts_ms=ts_send,
-                                  recv_ts_ms=ts_recv,
-                                  payload_len=len(payload))
+        
+        # For reliable channel: use RTT from ACK (send -> ACK received at sender)
+        # For unreliable channel: use timestamp difference (send -> received at receiver)
+        if chan == CHAN_RELIABLE and meta.get("rtt_ms") is not None:
+            # Use the RTT calculated when ACK was received (sender perspective)
+            # This measures time from original send until ACK confirms delivery
+            rtt_ms = meta.get("rtt_ms")
+            # Simulate ts_recv as ts_send + rtt to maintain compatibility with on_recv API
+            self._stats[chan].on_recv(send_ts_ms=ts_send,
+                                     recv_ts_ms=ts_send + rtt_ms,
+                                     payload_len=len(payload))
+        else:
+            # Unreliable channel or reliable without RTT info: use actual timestamps
+            self._stats[chan].on_recv(send_ts_ms=ts_send,
+                                     recv_ts_ms=ts_recv,
+                                     payload_len=len(payload))
 
         return payload, meta
     

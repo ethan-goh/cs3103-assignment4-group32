@@ -22,6 +22,7 @@ from typing import Optional, Tuple, Dict
 from . import packet
 from .sr_sender import SRSender
 from .sr_receiver import SRReceiver
+from .adaptive import AdaptiveParameterController
 
 
 class UDPIO:
@@ -31,7 +32,8 @@ class UDPIO:
     """
     
     def __init__(self, local_addr: Tuple[str, int], remote_addr: Optional[Tuple[str, int]] = None, 
-                 send_interval_ms: int = 10, stats_sync_interval: float = 5.0):
+                 send_interval_ms: int = 10, stats_sync_interval: float = 2.0,
+                 rto_ms: int = 50, skip_threshold_ms: int = 200, adaptive: bool = False):
         """
         Initialize the UDP I/O adapter.
         
@@ -41,6 +43,9 @@ class UDPIO:
                         Can be None for server mode (will be set on first recv)
             send_interval_ms: How often the send loop runs (milliseconds)
             stats_sync_interval: How often to exchange statistics (seconds)
+            rto_ms: Retransmission timeout in milliseconds (default: 50)
+            skip_threshold_ms: Skip threshold for lost packets in milliseconds (default: 200)
+            adaptive: Enable adaptive RTO and skip threshold (default: False)
         """
         self.local_addr = local_addr
         self.remote_addr = remote_addr
@@ -51,9 +56,18 @@ class UDPIO:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(local_addr)
         
-        # SR protocol components
-        self.sender = SRSender()
-        self.receiver = SRReceiver()
+        # Adaptive parameter control
+        self.adaptive = adaptive
+        self.adaptive_controller = None
+        if adaptive:
+            self.adaptive_controller = AdaptiveParameterController(
+                initial_rto=rto_ms,
+                initial_skip=skip_threshold_ms
+            )
+        
+        # SR protocol components with configurable parameters
+        self.sender = SRSender(rto_ms=rto_ms, skip_threshold_ms=skip_threshold_ms)
+        self.receiver = SRReceiver(skip_threshold_ms=skip_threshold_ms)
         
         # Store ACK information for metadata population
         # Maps seq_no -> (rtt_ms, retransmissions)
@@ -187,6 +201,15 @@ class UDPIO:
         if seq != -1:  # Successfully queued
             with self.stats_lock:
                 self.reliable_sent += 1
+            
+            # Track reliable send in metrics
+            if self.metrics_callback:
+                now_ms = int(time.time() * 1000)
+                self.metrics_callback('sent', {
+                    'channel': 1,  # Channel 1 = reliable
+                    'payload_len': len(data),
+                    'ts_ms': now_ms
+                })
         
         return seq
         
@@ -220,7 +243,11 @@ class UDPIO:
         
         # Track unreliable send in metrics
         if self.metrics_callback:
-            self.metrics_callback('sent', 0)  # Channel 0 = unreliable
+            self.metrics_callback('sent', {
+                'channel': 0,  # Channel 0 = unreliable
+                'payload_len': len(data),
+                'ts_ms': now
+            })
 
 
     def recv(self, timeout: Optional[float] = None) -> Optional[Tuple[bytes, Dict]]:
@@ -266,6 +293,11 @@ class UDPIO:
                 time.sleep(self.send_interval_ms / 1000.0)
                 continue
             
+            # Try to apply any pending adaptive RTO updates if window usage is low
+            if self.adaptive and self.adaptive_controller:
+                window_usage = len(self.sender.unacked) / self.sender.window_size if self.sender.window_size > 0 else 0.0
+                self.adaptive_controller.try_apply_pending(window_usage)
+            
             # ---- STEP 1: Send DATA frames (new + retransmissions) ----
             # Ask the SR sender what needs to be sent right now
             frames_to_send = self.sender.next_frames(now)
@@ -297,9 +329,7 @@ class UDPIO:
                 with self.stats_lock:
                     self.acks_sent += 1
                 
-                # Track ACK as "sent" in metrics for reliable channel
-                if self.metrics_callback:
-                    self.metrics_callback('sent', 1)  # Channel 1 = reliable
+                # Note: ACKs are protocol overhead, not counted in application-level metrics
 
             # ---- STEP 3: Send periodic STATS_SYNC ----
             current_time = time.time()
@@ -368,6 +398,71 @@ class UDPIO:
                     # Handle statistics synchronization (invisible to application)
                     try:
                         stats_data = json.loads(payload.decode('utf-8'))
+                        
+                        # Calculate RTT from STATS_SYNC (for client-side latency estimation)
+                        peer_ts = stats_data.get('timestamp', 0)
+                        if peer_ts > 0:
+                            # Handle timestamp wraparound (both timestamps are modulo 2^32)
+                            peer_ts_32 = peer_ts & 0xFFFFFFFF
+                            now_32 = now & 0xFFFFFFFF
+                            
+                            if now_32 >= peer_ts_32:
+                                rtt_ms = now_32 - peer_ts_32
+                            else:
+                                # Wraparound occurred
+                                rtt_ms = (0x100000000 + now_32 - peer_ts_32) & 0xFFFFFFFF
+                            
+                            # DEBUG: Uncomment to see RTT values
+                            print(f"[DEBUG STATS_SYNC] peer_ts={peer_ts}, now={now}, rtt_ms={rtt_ms}, callback={self.metrics_callback is not None}")
+                            
+                            # Sanity check: RTT should be reasonable (< 1 hour)
+                            # NOTE: On localhost, RTT can be 0-1ms, which is valid
+                            if rtt_ms < 3600000:
+                                # Notify metrics callback about RTT (use for both channels)
+                                if self.metrics_callback:
+                                    self.metrics_callback('stats_sync_rtt', {'rtt_ms': rtt_ms, 'recv_ts': now})
+                                
+                                # Update adaptive controller if enabled
+                                if self.adaptive and self.adaptive_controller:
+                                    # Calculate loss rate from peer stats (FIX 5: use unique packets)
+                                    # Use sequence numbers to get unique packets sent (not including retransmissions)
+                                    # The sender's next_seq tracks how many unique packets have been queued
+                                    unique_sent_reliable = self.sender.next_seq  # Total unique reliable packets sent
+                                    
+                                    # For loss calculation, use the reliable channel stats
+                                    # (unreliable doesn't retransmit, so it doesn't suffer from the feedback loop)
+                                    peer_received_reliable = stats_data.get('reliable_received', 0)
+                                    
+                                    # Calculate loss rate based on unique packets
+                                    # Handle edge cases: division by zero, initial state
+                                    if unique_sent_reliable > 0:
+                                        loss_rate = max(0.0, min(1.0, 1.0 - (peer_received_reliable / unique_sent_reliable)))
+                                    else:
+                                        loss_rate = 0.0  # No packets sent yet, assume no loss
+                                    
+                                    # Calculate current SR window usage
+                                    window_usage = len(self.sender.unacked) / self.sender.window_size if self.sender.window_size > 0 else 0.0
+                                    
+                                    # Sanity check: if loss rate is invalid, skip this update
+                                    if loss_rate < 0 or loss_rate > 1:
+                                        print(f"[ADAPTIVE WARNING] Invalid loss rate {loss_rate}, skipping update")
+                                        continue
+                                    
+                                    # Update RTO based on RFC 6298 (skip threshold stays fixed)
+                                    # Pass window_usage to allow safe updates only when window is not busy
+                                    new_rto, fixed_skip = self.adaptive_controller.on_stats_sync(rtt_ms, loss_rate, window_usage)
+                                    
+                                    # Sanity check the new RTO
+                                    if new_rto <= 0 or new_rto > 1000:
+                                        print(f"[ADAPTIVE WARNING] Invalid RTO={new_rto}ms, skipping update")
+                                        continue
+                                    
+                                    # Apply new RTO to sender only (skip threshold remains fixed)
+                                    # This only affects RELIABLE channel retransmissions
+                                    self.sender.update_rto(new_rto)
+                                    # Do NOT update skip threshold - it stays at initial value
+                                    # self.receiver.update_skip_threshold(fixed_skip)  # Skip this!
+                        
                         with self.stats_lock:
                             self.peer_stats['reliable_sent'] = stats_data.get('reliable_sent', 0)
                             self.peer_stats['unreliable_sent'] = stats_data.get('unreliable_sent', 0)
@@ -433,21 +528,23 @@ class UDPIO:
                         self.delivered_queue.put((payload, metadata))
                         
                 elif frame_type == "ACK":
-                    # Track ACK as received (client perspective)
-                    with self.stats_lock:
-                        self.acks_received += 1
-                    
-                    # Track ACK as "received" in metrics for reliable channel
-                    if self.metrics_callback:
-                        self.metrics_callback('ack_received', 1)  # Channel 1 = reliable
-                    
-                    # Route to SR sender
+                    # Route to SR sender first to see if this ACK is valid
                     ack_no = header['seq_no']
                     ack_results = self.sender.on_ack(ack_no, now)
 
-                    # Store ACK info for when the packet is delivered
-                    for seq, rtt, retx in ack_results:
-                        self.ack_info[seq] = (rtt, retx)
+                    # Only count ACK if it successfully acknowledged a new packet
+                    if ack_results:  # Non-empty list means packet was newly acknowledged
+                        # Track ACK as received (client perspective)
+                        with self.stats_lock:
+                            self.acks_received += 1
+                        
+                        # Track ACK in metrics for reliable channel
+                        if self.metrics_callback:
+                            self.metrics_callback('ack_received', 1)  # Channel 1 = reliable
+
+                        # Store ACK info for when the packet is delivered
+                        for seq, rtt, retx in ack_results:
+                            self.ack_info[seq] = (rtt, retx)
                     
             except socket.timeout:
                 # Timeout is expected; just loop again and check if still running

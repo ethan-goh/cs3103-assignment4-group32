@@ -8,6 +8,15 @@ class SRReceiver:
         self.gap_start_ms = None    # when we first noticed a gap at expected_seq
         self.skip_threshold_ms = skip_threshold_ms
         self.window_size = window_size
+    
+    def update_skip_threshold(self, new_skip_threshold_ms: int):
+        """
+        Dynamically update skip threshold for adaptive parameter control.
+        
+        Args:
+            new_skip_threshold_ms: New skip threshold in milliseconds
+        """
+        self.skip_threshold_ms = new_skip_threshold_ms
 
     def _seq_diff(self, seq_a: int, seq_b: int) -> int:
         """
